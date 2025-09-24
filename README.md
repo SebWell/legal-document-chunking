@@ -19,7 +19,18 @@ Remplacer un système JavaScript n8n produisant 88% de chunks de faible qualité
 
 ## 🚀 Installation
 
-### Déploiement automatique sur VPS
+### ⚡ Déploiement Docker (recommandé)
+
+```bash
+# Cloner et déployer en une commande
+git clone https://github.com/SebWell/legal-document-chunking.git
+cd legal-document-chunking
+docker compose -f docker-compose.chunking.yml up -d --build
+```
+
+**URL** : https://chunk.chantierdoc.com/
+
+### 🛠️ Déploiement VPS classique
 
 ```bash
 # Copier les fichiers sur votre VPS
@@ -32,7 +43,7 @@ sudo chmod +x deploy.sh
 sudo ./deploy.sh
 ```
 
-### Installation manuelle
+### 💻 Installation locale
 
 ```bash
 # Créer un environnement virtuel
