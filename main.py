@@ -73,27 +73,45 @@ class DocumentMetadataExtractor:
             },
             'cctp': {
                 'title_patterns': [r'cctp', r'cahier.{0,20}clauses.{0,20}techniques', r'clauses.{0,20}techniques.{0,20}particuli[eè]res'],
-                'parties_patterns': {'maitre_ouvrage': r'ma[iî]tre.{0,5}ouvrage[^\n]*([A-Z][^\n]{10,80})', 'entrepreneur': r'entrepreneur[^\n]*([A-Z][^\n]{10,80})'}
+                'parties_patterns': {
+                    'maitre_ouvrage': [r'ma[iî]tre.{0,5}ouvrage[^\n]*([A-Z][^\n]{10,80})'],
+                    'entrepreneur': [r'entrepreneur[^\n]*([A-Z][^\n]{10,80})']
+                }
             },
             'bail_habitation': {
                 'title_patterns': [r'bail.{0,20}habitation', r'bail.{0,20}location', r'contrat.{0,20}location'],
-                'parties_patterns': {'bailleur': r'bailleur[^\n]*([A-Z][^\n]{10,80})', 'locataire': r'locataire[^\n]*([A-Z][^\n]{10,80})'}
+                'parties_patterns': {
+                    'bailleur': [r'bailleur[^\n]*([A-Z][^\n]{10,80})'],
+                    'locataire': [r'locataire[^\n]*([A-Z][^\n]{10,80})']
+                }
             },
             'bail_commercial': {
                 'title_patterns': [r'bail.{0,20}commercial', r'bail.{0,20}professionnel'],
-                'parties_patterns': {'bailleur': r'bailleur[^\n]*([A-Z][^\n]{10,80})', 'preneur': r'preneur[^\n]*([A-Z][^\n]{10,80})'}
+                'parties_patterns': {
+                    'bailleur': [r'bailleur[^\n]*([A-Z][^\n]{10,80})'],
+                    'preneur': [r'preneur[^\n]*([A-Z][^\n]{10,80})']
+                }
             },
             'acte_notarie': {
                 'title_patterns': [r'acte.{0,20}notari[eé]', r'acte.{0,20}vente', r'acte.{0,20}acquisition'],
-                'parties_patterns': {'vendeur': r'vendeur[^\n]*([A-Z][^\n]{10,80})', 'acquereur': r'acqu[eé]reur[^\n]*([A-Z][^\n]{10,80})'}
+                'parties_patterns': {
+                    'vendeur': [r'vendeur[^\n]*([A-Z][^\n]{10,80})'],
+                    'acquereur': [r'acqu[eé]reur[^\n]*([A-Z][^\n]{10,80})']
+                }
             },
             'permis_construire': {
                 'title_patterns': [r'permis.{0,20}construire', r'autorisation.{0,20}construire'],
-                'parties_patterns': {'demandeur': r'demandeur[^\n]*([A-Z][^\n]{10,80})', 'commune': r'commune.{0,20}([A-Z][^\n]{10,40})'}
+                'parties_patterns': {
+                    'demandeur': [r'demandeur[^\n]*([A-Z][^\n]{10,80})'],
+                    'commune': [r'commune.{0,20}([A-Z][^\n]{10,40})']
+                }
             },
             'devis': {
                 'title_patterns': [r'devis', r'estimation', r'chiffrage'],
-                'parties_patterns': {'entreprise': r'entreprise[^\n]*([A-Z][^\n]{10,80})', 'client': r'client[^\n]*([A-Z][^\n]{10,80})'}
+                'parties_patterns': {
+                    'entreprise': [r'entreprise[^\n]*([A-Z][^\n]{10,80})'],
+                    'client': [r'client[^\n]*([A-Z][^\n]{10,80})']
+                }
             }
         }
 
@@ -142,9 +160,11 @@ class DocumentMetadataExtractor:
                 score += matches * 3  # Bonus pour les patterns de titre
 
             # Bonus pour la présence des parties typiques
-            for party_type, pattern in patterns['parties_patterns'].items():
-                if re.search(pattern, text, re.IGNORECASE):
-                    score += 2
+            for party_type, pattern_list in patterns['parties_patterns'].items():
+                for pattern in pattern_list:
+                    if re.search(pattern, text, re.IGNORECASE):
+                        score += 2
+                        break  # Un seul match par type de partie
 
             if score > 0:
                 scores[doc_type] = score
