@@ -7,16 +7,17 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import json
 import re
 import time
+import hashlib
 from datetime import datetime, timezone
 
 app = FastAPI(
     title="Legal Document Chunking API",
-    description="API pour le chunking intelligent de documents juridiques français",
-    version="2.0.0"
+    description="API pour le chunking intelligent de documents juridiques français avec métadonnées contextuelles",
+    version="2.1.0"
 )
 
 # Force OpenAPI 3.0.2 pour compatibilité avec Swagger UI
@@ -47,7 +48,285 @@ app.add_middleware(
 
 class ChunkingRequest(BaseModel):
     extractedText: str
+    userId: str
+    projectId: str
     options: Optional[Dict[str, Any]] = {}
+
+class DocumentMetadataExtractor:
+    """Extracteur de métadonnées documentaires pour le contexte RAG."""
+
+    def __init__(self):
+        self.document_patterns = {
+            'contrat_reservation_vefa': {
+                'title_patterns': [r'contrat.{0,20}r[eé]servation.{0,20}vefa', r'r[eé]servation.{0,30}futur.{0,10}ach[eè]vement'],
+                'parties_patterns': {
+                    'reservant': [
+                        r'société\s+dénommée\s+([A-Z][^\n]+?)\s+au\s+capital',
+                        r'r[eé]servant[^\n]*([A-Z][^\n]{10,80})',
+                        r'dénommée\s+([A-Z][^\n]{20,80})'
+                    ],
+                    'reservataire': [
+                        r'r[eé]servataire[^\n]*([A-Z][^\n]{10,80})',
+                        r'appelé[e]?\s+réservataire[^\n]*([A-Z][^\n]{10,80})'
+                    ]
+                }
+            },
+            'cctp': {
+                'title_patterns': [r'cctp', r'cahier.{0,20}clauses.{0,20}techniques', r'clauses.{0,20}techniques.{0,20}particuli[eè]res'],
+                'parties_patterns': {'maitre_ouvrage': r'ma[iî]tre.{0,5}ouvrage[^\n]*([A-Z][^\n]{10,80})', 'entrepreneur': r'entrepreneur[^\n]*([A-Z][^\n]{10,80})'}
+            },
+            'bail_habitation': {
+                'title_patterns': [r'bail.{0,20}habitation', r'bail.{0,20}location', r'contrat.{0,20}location'],
+                'parties_patterns': {'bailleur': r'bailleur[^\n]*([A-Z][^\n]{10,80})', 'locataire': r'locataire[^\n]*([A-Z][^\n]{10,80})'}
+            },
+            'bail_commercial': {
+                'title_patterns': [r'bail.{0,20}commercial', r'bail.{0,20}professionnel'],
+                'parties_patterns': {'bailleur': r'bailleur[^\n]*([A-Z][^\n]{10,80})', 'preneur': r'preneur[^\n]*([A-Z][^\n]{10,80})'}
+            },
+            'acte_notarie': {
+                'title_patterns': [r'acte.{0,20}notari[eé]', r'acte.{0,20}vente', r'acte.{0,20}acquisition'],
+                'parties_patterns': {'vendeur': r'vendeur[^\n]*([A-Z][^\n]{10,80})', 'acquereur': r'acqu[eé]reur[^\n]*([A-Z][^\n]{10,80})'}
+            },
+            'permis_construire': {
+                'title_patterns': [r'permis.{0,20}construire', r'autorisation.{0,20}construire'],
+                'parties_patterns': {'demandeur': r'demandeur[^\n]*([A-Z][^\n]{10,80})', 'commune': r'commune.{0,20}([A-Z][^\n]{10,40})'}
+            },
+            'devis': {
+                'title_patterns': [r'devis', r'estimation', r'chiffrage'],
+                'parties_patterns': {'entreprise': r'entreprise[^\n]*([A-Z][^\n]{10,80})', 'client': r'client[^\n]*([A-Z][^\n]{10,80})'}
+            }
+        }
+
+    def extract_document_metadata(self, text: str) -> Dict:
+        """Extraction complète des métadonnées du document."""
+        text_sample = text[:5000]  # Analyser les 5000 premiers caractères
+
+        # 1. Classification du document
+        doc_type = self.detect_document_type(text_sample)
+
+        # 2. Extraction du titre
+        title = self.extract_title(text_sample, doc_type)
+
+        # 3. Extraction de la date principale
+        date = self.extract_main_date(text_sample)
+
+        # 4. Extraction des parties
+        parties = self.extract_parties(text_sample, doc_type)
+
+        # 5. Extraction de la localisation
+        location = self.extract_location(text_sample)
+
+        # 6. Génération de l'ID standardisé
+        doc_id = self.generate_document_id(text, title, date)
+
+        return {
+            'id': doc_id,
+            'title': title,
+            'date': date,
+            'type': doc_type,
+            'parties': parties,
+            'location': location,
+            'project': self.extract_project_name(text_sample)
+        }
+
+    def detect_document_type(self, text: str) -> str:
+        """Détecter le type de document avec patterns spécialisés."""
+        text_lower = text.lower()
+
+        # Score par type de document
+        scores = {}
+        for doc_type, patterns in self.document_patterns.items():
+            score = 0
+            for pattern in patterns['title_patterns']:
+                matches = len(re.findall(pattern, text_lower, re.IGNORECASE))
+                score += matches * 3  # Bonus pour les patterns de titre
+
+            # Bonus pour la présence des parties typiques
+            for party_type, pattern in patterns['parties_patterns'].items():
+                if re.search(pattern, text, re.IGNORECASE):
+                    score += 2
+
+            if score > 0:
+                scores[doc_type] = score
+
+        return max(scores, key=scores.get) if scores else 'contrat_general'
+
+    def extract_title(self, text: str, doc_type: str) -> str:
+        """Extraire le titre principal du document."""
+        # Rechercher le titre en fonction du type détecté
+        if doc_type in self.document_patterns:
+            for pattern in self.document_patterns[doc_type]['title_patterns']:
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    title = match.group(0).strip()
+                    # Nettoyer et formater le titre
+                    title = re.sub(r'\s+', ' ', title)
+                    return title.upper()
+
+        # Fallback: chercher les premiers mots en majuscules
+        title_patterns = [
+            r'^\s*([A-Z][A-Z\s]{20,100}?)(?:\n|$)',
+            r'(?:^|\n)\s*([A-Z][A-Z\s]{15,80}?)(?:\n|$)',
+            r'(?:CONTRAT|BAIL|CCTP|DEVIS|ACTE)\s+[A-Z\s]{10,60}'
+        ]
+
+        for pattern in title_patterns:
+            match = re.search(pattern, text, re.MULTILINE)
+            if match:
+                title = match.group(1) if match.groups() else match.group(0)
+                return re.sub(r'\s+', ' ', title.strip())
+
+        return "DOCUMENT JURIDIQUE"
+
+    def extract_main_date(self, text: str) -> str:
+        """Extraire la date principale (signature, création)."""
+        # Patterns de dates avec contexte prioritaire
+        priority_patterns = [
+            r'sign[eé]\s+le\s+(\d{1,2}[\s\/\-\.]+(?:janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre|\d{1,2})[\s\/\-\.]+\d{2,4})',
+            r'fait\s+[àa]\s+[^\n]+\s+le\s+(\d{1,2}[\s\/\-\.]+(?:janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre|\d{1,2})[\s\/\-\.]+\d{2,4})',
+            r'\ben\s+date\s+du\s+(\d{1,2}[\s\/\-\.]+(?:janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre|\d{1,2})[\s\/\-\.]+\d{2,4})',
+            r'établi\s+le\s+(\d{1,2}[\s\/\-\.]+(?:janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre|\d{1,2})[\s\/\-\.]+\d{2,4})'
+        ]
+
+        for pattern in priority_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                return self.normalize_date(match.group(1))
+
+        # Fallback: première date trouvée
+        general_patterns = [
+            r'\d{1,2}[\s\/\-\.]+(?:janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre)[\s\/\-\.]+\d{2,4}',
+            r'\d{1,2}[\s\/\-\.]\d{1,2}[\s\/\-\.]\d{2,4}'
+        ]
+
+        for pattern in general_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                return self.normalize_date(match.group(0))
+
+        return datetime.now().strftime("%d/%m/%Y")
+
+    def normalize_date(self, date_str: str) -> str:
+        """Normaliser une date au format DD/MM/YYYY."""
+        # Mapping des mois français
+        months = {
+            'janvier': '01', 'février': '02', 'mars': '03', 'avril': '04',
+            'mai': '05', 'juin': '06', 'juillet': '07', 'août': '08',
+            'septembre': '09', 'octobre': '10', 'novembre': '11', 'décembre': '12'
+        }
+
+        date_clean = re.sub(r'\s+', ' ', date_str.strip().lower())
+
+        # Format avec mois en lettres
+        for month_name, month_num in months.items():
+            if month_name in date_clean:
+                parts = re.split(r'[\s\-\.\/]+', date_clean)
+                day = parts[0].zfill(2)
+                year = parts[2] if len(parts[2]) == 4 else '20' + parts[2]
+                return f"{day}/{month_num}/{year}"
+
+        # Format numérique
+        parts = re.split(r'[\s\-\.\/]+', date_clean)
+        if len(parts) >= 3:
+            day = parts[0].zfill(2)
+            month = parts[1].zfill(2)
+            year = parts[2] if len(parts[2]) == 4 else ('20' + parts[2] if int(parts[2]) < 50 else '19' + parts[2])
+            return f"{day}/{month}/{year}"
+
+        return date_clean
+
+    def extract_parties(self, text: str, doc_type: str) -> Dict:
+        """Extraire les parties du contrat selon le type de document."""
+        parties = {}
+
+        if doc_type in self.document_patterns:
+            patterns = self.document_patterns[doc_type]['parties_patterns']
+            for party_type, pattern_list in patterns.items():
+                # Handle both list and single pattern formats
+                patterns_to_try = pattern_list if isinstance(pattern_list, list) else [pattern_list]
+
+                for pattern in patterns_to_try:
+                    match = re.search(pattern, text, re.IGNORECASE)
+                    if match:
+                        party_name = match.group(1) if match.groups() else match.group(0)
+                        # Nettoyer le nom de la partie
+                        party_name = re.sub(r'[,:;].*', '', party_name).strip()
+                        parties[party_type] = party_name[:80]  # Limiter la longueur
+                        break  # Stop at first match for this party type
+
+        # Add default reservataire for VEFA contracts if not found
+        if doc_type == 'contrat_reservation_vefa' and 'reservataire' not in parties:
+            parties['reservataire'] = '[Réservataire]'
+
+        # Fallback: recherche générique
+        if not parties:
+            generic_patterns = {
+                'partie_1': r'dénommé[e]?\s+[«"]([^»"\n]{10,80})[»"]',
+                'partie_2': r'd\'autre\s+part[^\n]*([A-Z][^\n]{10,80})'
+            }
+
+            for party_type, pattern in generic_patterns.items():
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    parties[party_type] = match.group(1).strip()[:80]
+
+        return parties
+
+    def extract_location(self, text: str) -> str:
+        """Extraire la localisation principale."""
+        location_patterns = [
+            r'(?:situé|sis|localisé)[^\n]*?([A-Z][a-z]+(?:[\s\-][A-Z][a-z]+)*(?:\s*\(\d{2,5}\))?)',
+            r'commune\s+de\s+([A-Z][a-z]+(?:[\s\-][A-Z][a-z]+)*)',
+            r'([A-Z][A-Z\s]+)\s*\(\d{2,5}\)',
+            r'\b([A-Z][a-z]+(?:[\s\-][A-Z][a-z]+)*)\s*\(\d{2,5}\)'
+        ]
+
+        for pattern in location_patterns:
+            match = re.search(pattern, text)
+            if match:
+                location = match.group(1).strip()
+                # Vérifier que ce n'est pas un nom de société
+                if not re.match(r'(SARL|SAS|SA|SASU|EURL|SCI)', location, re.IGNORECASE):
+                    return location
+
+        return ""
+
+    def extract_project_name(self, text: str) -> str:
+        """Extraire le nom du projet/programme."""
+        project_patterns = [
+            r'programme[^\n]*[«"]([^»"\n]{5,50})[»"]',
+            r'résidence[^\n]*[«"]([^»"\n]{5,50})[»"]',
+            r'projet[^\n]*[«"]([^»"\n]{5,50})[»"]',
+            r'dénommé[e]?[^\n]*[«"]([^»"\n]{5,50})[»"]'
+        ]
+
+        for pattern in project_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+
+        return ""
+
+    def generate_document_id(self, text: str, title: str, date: str) -> str:
+        """Générer un ID standardisé AAAAMMJJHHMMSSXXX."""
+        # Utiliser la date du document si disponible, sinon date actuelle
+        try:
+            if date and '/' in date:
+                day, month, year = date.split('/')[:3]
+                doc_date = datetime(int(year), int(month), int(day), 12, 0, 0)
+            else:
+                doc_date = datetime.now()
+        except:
+            doc_date = datetime.now()
+
+        # Format de base: AAAAMMJJHHMMSS
+        base_id = doc_date.strftime("%Y%m%d%H%M%S")
+
+        # Générer un hash court du contenu pour l'unicité
+        content_hash = hashlib.md5((text + title).encode('utf-8')).hexdigest()[:3].upper()
+
+        return base_id + content_hash
+
 
 class ChunkingService:
     """Service de chunking intelligent pour documents juridiques - Version Pro."""
@@ -63,7 +342,10 @@ class ChunkingService:
             'financial_terms': ['révision de prix', 'actualisation', 'variation', 'acompte', 'avancement', 'retenue de garantie', 'décompte']
         }
 
-    def create_smart_chunks(self, text: str, target_size: int = 60, overlap: int = 15):
+        # Initialiser l'extracteur de métadonnées
+        self.metadata_extractor = DocumentMetadataExtractor()
+
+    def create_smart_chunks(self, text: str, target_size: int = 60, overlap: int = 15, user_id: str = None, project_id: str = None):
         """Créer des chunks intelligents avec gestion avancée des structures."""
         # Nettoyage et préparation du texte
         text = self.preprocess_text(text)
@@ -76,9 +358,9 @@ class ChunkingService:
 
         # Traitement selon la structure détectée
         if special_sections['has_tables']:
-            return self.chunk_with_table_handling(text, adaptive_size, overlap)
+            return self.chunk_with_table_handling(text, adaptive_size, overlap, user_id=user_id, project_id=project_id)
         else:
-            return self.chunk_standard_content(text, adaptive_size, overlap)
+            return self.chunk_standard_content(text, adaptive_size, overlap, user_id=user_id, project_id=project_id)
 
     def preprocess_text(self, text: str) -> str:
         """Prétraitement avancé du texte."""
@@ -141,7 +423,7 @@ class ChunkingService:
 
         return max(category_scores, key=category_scores.get) if any(category_scores.values()) else 'general'
 
-    def chunk_with_table_handling(self, text: str, target_size: int, overlap: int):
+    def chunk_with_table_handling(self, text: str, target_size: int, overlap: int, user_id: str = None, project_id: str = None):
         """Chunking spécialisé pour les documents avec tableaux."""
         chunks = []
         chunk_id = 1
@@ -152,12 +434,12 @@ class ChunkingService:
         for section in sections:
             if self.is_table_content(section):
                 # Traitement spécialisé pour les tableaux
-                table_chunks = self.chunk_table_content(section, chunk_id)
+                table_chunks = self.chunk_table_content(section, chunk_id, user_id, project_id)
                 chunks.extend(table_chunks)
                 chunk_id += len(table_chunks)
             else:
                 # Traitement standard pour le texte normal
-                section_chunks = self.chunk_standard_content(section, target_size, overlap, start_id=chunk_id)
+                section_chunks = self.chunk_standard_content(section, target_size, overlap, start_id=chunk_id, user_id=user_id, project_id=project_id)
                 chunks.extend(section_chunks)
                 chunk_id += len(section_chunks)
 
@@ -204,7 +486,7 @@ class ChunkingService:
         """Vérifier si une section contient un tableau."""
         return '|' in section and section.count('|') >= 4
 
-    def chunk_table_content(self, table_text: str, start_id: int) -> list:
+    def chunk_table_content(self, table_text: str, start_id: int, user_id: str = None, project_id: str = None) -> list:
         """Chunking spécialisé pour les tableaux."""
         chunks = []
         lines = table_text.strip().split('\n')
@@ -246,7 +528,7 @@ class ChunkingService:
 
         return chunks
 
-    def chunk_standard_content(self, text: str, target_size: int, overlap: int, start_id: int = 1):
+    def chunk_standard_content(self, text: str, target_size: int, overlap: int, start_id: int = 1, user_id: str = None, project_id: str = None):
         """Chunking standard amélioré."""
         # Découpage par phrases avec gestion des abréviations
         sentences = self.smart_sentence_split(text)
@@ -267,7 +549,7 @@ class ChunkingService:
 
                 # Créer le chunk actuel
                 chunk_content = ' '.join(current_chunk)
-                chunk = self.create_chunk(chunk_content, chunk_id)
+                chunk = self.create_chunk(chunk_content, chunk_id, user_id, project_id)
                 chunks.append(chunk)
 
                 # Préparer le chunk suivant avec overlap sémantique
@@ -283,7 +565,7 @@ class ChunkingService:
         # Chunk final
         if current_chunk:
             chunk_content = ' '.join(current_chunk)
-            chunk = self.create_chunk(chunk_content, chunk_id)
+            chunk = self.create_chunk(chunk_content, chunk_id, user_id, project_id)
             chunks.append(chunk)
 
         return chunks
@@ -340,7 +622,7 @@ class ChunkingService:
         # Sinon, prendre les derniers mots
         return current_chunk[-overlap_size:] if len(current_chunk) >= overlap_size else current_chunk
 
-    def create_chunk(self, content: str, chunk_id: int):
+    def create_chunk(self, content: str, chunk_id: int, user_id: str = None, project_id: str = None):
         """Créer un chunk avec métadonnées et analyse de qualité."""
         word_count = len(content.split())
 
@@ -353,40 +635,80 @@ class ChunkingService:
         # Classification du contenu
         content_type = self.classify_content(content)
 
+        # Structure simplifiée en 2 familles
         return {
-            'id': f'chunk_{chunk_id:03d}',
-            'content': content,
-            'hierarchical_title': self.get_title(content),
-            'content_type': content_type,
-            'section_info': {
-                'type': 'content',
-                'number': chunk_id,
-                'title': self.get_title(content)
-            },
-            'content_classification': {
-                'type': content_type,
-                'confidence': 0.85,
-                'alternatives': [],
-                'scores': self.get_classification_scores(content)
+            'content': {
+                'text': content,
+                'chunk_id': f'chunk_{chunk_id:03d}'
             },
             'metadata': {
                 'word_count': word_count,
                 'char_count': len(content),
                 'position': chunk_id,
-                'has_legal_references': bool(entities['legal_references']),
-                'has_financial_info': bool(entities['monetary_amounts']),
-                'has_dates': bool(entities['dates'])
+                'content_type': content_type,
+                'quality_score': quality_score,
+                'entities': entities,
+                'hierarchical_title': self.get_title(content),
+                'key_elements': self.extract_key_elements(content)
             },
-            'quality_analysis': {
-                'overall_score': quality_score,
-                'completeness': min(1.0, word_count / 50),
-                'coherence': self.calculate_coherence(content),
-                'relevance': self.calculate_relevance(content),
-                'factual_density': self.calculate_factual_density(entities)
-            },
-            'extracted_entities': entities,
-            'key_elements': self.extract_key_elements(content)
+            'userId': user_id,
+            'projectId': project_id
         }
+
+    def enrich_chunk_with_metadata(self, chunk: Dict, document_metadata: Dict) -> Dict:
+        """Enrichir un chunk avec les métadonnées du document."""
+        # Générer le format de source professionnel
+        source_info = self.generate_professional_source(document_metadata, chunk['metadata'])
+
+        # Structure finale avec 2 familles : content + document_info
+        return {
+            'content': chunk['content'],  # Texte + chunk_id
+            'document_info': document_metadata,  # Toutes les métadonnées du document
+            'chunk_metadata': chunk['metadata'],  # Métadonnées spécifiques au chunk
+            'source_reference': source_info  # Référence formatée pour RAG
+        }
+
+    def generate_professional_source(self, document_metadata: Dict, chunk_metadata: Dict) -> str:
+        """Générer une référence source professionnelle."""
+        # Construire le titre avec projet si disponible
+        title = document_metadata.get('title', 'DOCUMENT JURIDIQUE')
+        project = document_metadata.get('project', '')
+        if project and project not in title:
+            title = f"{title} - {project}"
+
+        # Date formatée
+        date = document_metadata.get('date', '')
+        date_str = f" ({date})" if date else ""
+
+        # Parties formatées
+        parties = document_metadata.get('parties', {})
+        parties_str = ""
+        if parties:
+            party_names = []
+            for party_type, party_name in parties.items():
+                if party_name:
+                    party_names.append(party_name)
+            if len(party_names) >= 2:
+                parties_str = f"\nParties : {party_names[0]} vs {party_names[1]}"
+            elif len(party_names) == 1:
+                parties_str = f"\nPartie : {party_names[0]}"
+
+        # Document ID
+        doc_id = document_metadata.get('id', '')
+        doc_id_str = f"\nDocument ID: {doc_id}" if doc_id else ""
+
+        # Localisation si disponible
+        location = document_metadata.get('location', '')
+        location_str = f"\nLocalisation : {location}" if location else ""
+
+        # Titre hiérarchique du chunk (clause, article, etc.)
+        hierarchical_title = chunk_metadata.get('hierarchical_title', '')
+        clause_str = f"\n{hierarchical_title}" if hierarchical_title and hierarchical_title != "Clause contractuelle" else ""
+
+        # Assembler la référence complète
+        source_reference = f"Source : {title}{date_str}{parties_str}{doc_id_str}{location_str}{clause_str}"
+
+        return source_reference.strip()
 
     def analyze_quality(self, content: str) -> float:
         """Analyse de qualité avancée basée sur de multiples facteurs."""
@@ -945,11 +1267,19 @@ chunking_service = ChunkingService()
 async def root():
     """Point d'entrée principal de l'API."""
     return {
-        "message": "Legal Document Chunking API",
-        "version": "1.0.0",
+        "message": "Legal Document Chunking API - Version Pro avec métadonnées contextuelles",
+        "version": "2.1.0",
+        "features": [
+            "Extraction automatique des métadonnées documentaires",
+            "Génération d'ID standardisés",
+            "Structure JSON optimisée pour RAG",
+            "Références sources professionnelles",
+            "Support multi-types : VEFA, CCTP, Baux, etc."
+        ],
         "endpoints": {
-            "chunk": "/chunk - POST - Chunking de documents",
-            "health": "/health - GET - Status de l'API"
+            "chunk": "/chunk - POST - Chunking de documents avec métadonnées",
+            "health": "/health - GET - Status de l'API",
+            "docs": "/docs - GET - Documentation interactive"
         }
     }
 
@@ -1003,26 +1333,33 @@ async def chunk_document(request: ChunkingRequest):
         chunks = chunking_service.create_smart_chunks(
             extracted_text,
             target_chunk_size,
-            overlap_size
+            overlap_size,
+            user_id=request.userId,
+            project_id=request.projectId
         )
 
         end_time = time.time()
         processing_time = int((end_time - start_time) * 1000)
 
-        # Calcul des statistiques
+        # Calcul des statistiques sur la nouvelle structure
         quality_dist = {'high': 0, 'medium': 0, 'low': 0}
         total_quality = 0
+        avg_chunk_size = 0
 
-        for chunk in chunks:
-            score = chunk['quality_analysis']['overall_score']
-            total_quality += score
+        if chunks:
+            for chunk in chunks:
+                score = chunk['chunk_metadata']['quality_score']
+                total_quality += score
+                avg_chunk_size += chunk['chunk_metadata']['word_count']
 
-            if score >= 0.8:
-                quality_dist['high'] += 1
-            elif score >= 0.5:
-                quality_dist['medium'] += 1
-            else:
-                quality_dist['low'] += 1
+                if score >= 0.8:
+                    quality_dist['high'] += 1
+                elif score >= 0.5:
+                    quality_dist['medium'] += 1
+                else:
+                    quality_dist['low'] += 1
+
+            avg_chunk_size = avg_chunk_size / len(chunks)
 
         avg_quality = total_quality / len(chunks) if chunks else 0
 
@@ -1041,24 +1378,24 @@ async def chunk_document(request: ChunkingRequest):
                 "Taux élevé de chunks de basse qualité - considérer l'augmentation de target_chunk_size"
             )
 
-        # Réponse finale
+        # Réponse finale avec nouvelle structure
         response_data = {
             'success': True,
             'chunks': chunks,
             'document_stats': {
-                'document_type': chunking_service.detect_document_type(extracted_text),
+                'document_info': chunks[0]['document_info'] if chunks else {},
                 'estimated_complexity': 'medium',
                 'processing_time_ms': processing_time,
                 'total_chunks': len(chunks),
                 'avg_chunk_quality': round(avg_quality, 3),
                 'quality_distribution': quality_dist,
                 'text_length': len(extracted_text),
-                'avg_chunk_size': sum(chunk['metadata']['word_count'] for chunk in chunks) / len(chunks) if chunks else 0
+                'avg_chunk_size': avg_chunk_size
             },
             'validation_results': validation_results,
             'processing_info': {
                 'timestamp': datetime.now(timezone.utc).isoformat(),
-                'version': '1.0.0',
+                'version': '2.1.0',
                 'target_chunk_size': target_chunk_size,
                 'overlap_size': overlap_size
             }
