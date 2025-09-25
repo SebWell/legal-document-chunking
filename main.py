@@ -1341,6 +1341,15 @@ async def chunk_document(request: ChunkingRequest):
         end_time = time.time()
         processing_time = int((end_time - start_time) * 1000)
 
+        # Extraction des métadonnées du document
+        document_metadata = chunking_service.metadata_extractor.extract_document_metadata(extracted_text)
+        document_metadata.update({
+            'userId': request.userId,
+            'projectId': request.projectId,
+            'processing_time_ms': processing_time,
+            'text_length': len(extracted_text)
+        })
+
         # Calcul des statistiques sur la nouvelle structure
         quality_dist = {'high': 0, 'medium': 0, 'low': 0}
         total_quality = 0
@@ -1348,9 +1357,9 @@ async def chunk_document(request: ChunkingRequest):
 
         if chunks:
             for chunk in chunks:
-                score = chunk['chunk_metadata']['quality_score']
+                score = chunk['metadata']['quality_score']
                 total_quality += score
-                avg_chunk_size += chunk['chunk_metadata']['word_count']
+                avg_chunk_size += chunk['metadata']['word_count']
 
                 if score >= 0.8:
                     quality_dist['high'] += 1
@@ -1383,7 +1392,7 @@ async def chunk_document(request: ChunkingRequest):
             'success': True,
             'chunks': chunks,
             'document_stats': {
-                'document_info': chunks[0]['document_info'] if chunks else {},
+                'document_info': document_metadata,
                 'estimated_complexity': 'medium',
                 'processing_time_ms': processing_time,
                 'total_chunks': len(chunks),
