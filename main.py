@@ -148,28 +148,91 @@ class DocumentMetadataExtractor:
         }
 
     def detect_document_type(self, text: str) -> str:
-        """Détecter le type de document avec patterns spécialisés."""
+        """Détecter le type de document avec patterns spécialisés et détection prioritaire."""
         text_lower = text.lower()
 
-        # Score par type de document
-        scores = {}
-        for doc_type, patterns in self.document_patterns.items():
+        # 1. DÉTECTION PRIORITAIRE pour mots-clés évidents (éviter les confusions)
+        priority_keywords = {
+            'contrat_reservation_vefa': [
+                'contrat de réservation', 'contrat de reservation', 'réservation vefa', 'reservation vefa',
+                'vente en l\'état futur', 'futur achèvement', 'réservataire', 'réservant',
+                'reservataire', 'reservant', 'vefa'
+            ],
+            'cctp': [
+                'cctp', 'cahier des clauses techniques', 'clauses techniques particulières'
+            ],
+            'bail_habitation': [
+                'bail d\'habitation', 'bail de location', 'contrat de location', 'locataire', 'bailleur'
+            ],
+            'bail_commercial': [
+                'bail commercial', 'bail professionnel', 'fonds de commerce'
+            ],
+            'acte_notarie': [
+                'acte notarié', 'acte de vente', 'acte d\'acquisition', 'étude notariale'
+            ],
+            'permis_construire': [
+                'permis de construire', 'autorisation de construire', 'demande de permis'
+            ],
+            'devis': [
+                'devis', 'estimation', 'chiffrage', 'entreprise', 'travaux'
+            ]
+        }
+
+        # Vérification prioritaire des mots-clés avec pondération
+        detection_scores = {}
+        for doc_type, keywords in priority_keywords.items():
             score = 0
-            for pattern in patterns['title_patterns']:
-                matches = len(re.findall(pattern, text_lower, re.IGNORECASE))
-                score += matches * 3  # Bonus pour les patterns de titre
+            for keyword in keywords:
+                if keyword in text_lower:
+                    # Score différencié selon l'importance du mot-clé
+                    if keyword in ['contrat de réservation', 'contrat de reservation', 'vefa']:
+                        score += 10  # Mots-clés très spécifiques
+                    elif keyword in ['reservataire', 'reservant', 'réservataire', 'réservant']:
+                        score += 5   # Mots-clés assez spécifiques
+                    else:
+                        score += 3   # Mots-clés moins spécifiques
 
-            # Bonus pour la présence des parties typiques
-            for party_type, pattern_list in patterns['parties_patterns'].items():
-                for pattern in pattern_list:
-                    if re.search(pattern, text, re.IGNORECASE):
-                        score += 2
-                        break  # Un seul match par type de partie
+            if score > 0:
+                # Bonus si les patterns regex matchent aussi
+                pattern_score = self._calculate_document_score(text_lower, text, doc_type)
+                detection_scores[doc_type] = score + pattern_score
 
+        # Retourner le type avec le meilleur score
+        if detection_scores:
+            best_type = max(detection_scores, key=detection_scores.get)
+            if detection_scores[best_type] >= 5:  # Seuil minimum de confiance
+                return best_type
+
+        # 2. FALLBACK: Score par type de document si pas de détection prioritaire
+        scores = {}
+        for doc_type in self.document_patterns.keys():
+            score = self._calculate_document_score(text_lower, text, doc_type)
             if score > 0:
                 scores[doc_type] = score
 
         return max(scores, key=scores.get) if scores else 'contrat_general'
+
+    def _calculate_document_score(self, text_lower: str, text: str, doc_type: str) -> int:
+        """Calculer le score pour un type de document donné."""
+        if doc_type not in self.document_patterns:
+            return 0
+
+        patterns = self.document_patterns[doc_type]
+        score = 0
+
+        # Score des patterns de titre
+        for pattern in patterns['title_patterns']:
+            matches = len(re.findall(pattern, text_lower, re.IGNORECASE))
+            score += matches * 3
+
+        # Score des patterns de parties
+        for party_type, pattern_list in patterns['parties_patterns'].items():
+            for pattern in pattern_list:
+                if re.search(pattern, text, re.IGNORECASE):
+                    score += 2
+                    break
+
+        return score
 
     def extract_title(self, text: str, doc_type: str) -> str:
         """Extraire le titre principal du document."""
