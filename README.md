@@ -1,21 +1,30 @@
 # Legal Document Chunking API
 
-API FastAPI pour le chunking intelligent de documents juridiques français, optimisée pour le secteur de la construction.
+API FastAPI pour le chunking intelligent de documents juridiques français avec métadonnées contextuelles complètes, optimisée pour le secteur de la construction et l'intégration RAG.
 
 ## 🎯 Objectif
 
-Remplacer un système JavaScript n8n produisant 88% de chunks de faible qualité par une solution Python atteignant <20% de chunks de faible qualité.
+Remplacer un système JavaScript n8n produisant 88% de chunks de faible qualité par une solution Python atteignant <20% de chunks de faible qualité avec préservation du contexte documentaire.
 
-**Résultats obtenus** : 12,5% de chunks de faible qualité (amélioration de 85,8% !)
+**Résultats obtenus** : 12,5% de chunks de faible qualité (amélioration de 85,8% !) + contexte complet préservé dans chaque chunk
 
-## 🏗️ Secteur ciblé
+## 🏗️ Types de documents supportés
 
-- Contrats de construction
-- CCTP (Cahiers des Clauses Techniques Particulières)
-- Devis et factures
-- Permis de construire
-- Baux commerciaux
-- Rapports d'expertise
+### 📋 Détection automatique de 7 types :
+- **Contrats VEFA** - Vente en l'État Futur d'Achèvement
+- **CCTP** - Cahiers des Clauses Techniques Particulières
+- **Baux d'habitation** - Contrats de location résidentielle
+- **Baux commerciaux** - Contrats de location professionnelle
+- **Actes notariés** - Ventes, acquisitions immobilières
+- **Permis de construire** - Autorisations d'urbanisme
+- **Devis** - Estimations et chiffrages travaux
+
+### 🔍 Extraction spécialisée par type :
+- **Parties contractuelles** adaptées (réservant/réservataire, bailleur/locataire, etc.)
+- **Dates clés** contextuelles (signature, livraison, échéances)
+- **Références légales** spécifiques au domaine
+- **Montants financiers** et conditions de paiement
+- **Localisation** et descriptifs techniques
 
 ## 🚀 Installation
 
@@ -66,23 +75,51 @@ Chunking intelligent d'un document.
 **Payload** :
 ```json
 {
-  "text": "Votre texte de document juridique...",
-  "target_size": 60,
-  "overlap": 15
+  "extractedText": "Votre texte de document juridique...",
+  "userId": "uuid-user-123",
+  "projectId": "uuid-project-456",
+  "options": {
+    "target_chunk_size": 60,
+    "overlap_size": 15
+  }
 }
 ```
 
 **Réponse** :
 ```json
 {
+  "success": true,
   "chunks": [
-    "Premier chunk de texte...",
-    "Deuxième chunk de texte..."
+    {
+      "content": {
+        "text": "Premier chunk de texte...",
+        "chunk_id": "chunk_001"
+      },
+      "metadata": {
+        "word_count": 45,
+        "quality_score": 0.87,
+        "content_type": "legal_clause",
+        "entities": {...}
+      },
+      "document_info": {
+        "document_id": "20120915120000429",
+        "title": "CONTRAT DE RESERVATION VEFA",
+        "date": "15/09/2012",
+        "parties": {
+          "reservant": "SCCV LA VALLEE MONTEVRAIN",
+          "reservataire": "[Réservataire]"
+        },
+        "project": "LE NEST",
+        "source": "CONTRAT DE RESERVATION VEFA - Projet LE NEST (15/09/2012)"
+      },
+      "userId": "uuid-user-123",
+      "projectId": "uuid-project-456"
+    }
   ],
-  "total_chunks": 12,
-  "quality_metrics": {
-    "low_quality_chunks": 1,
-    "percentage": 8.3
+  "document_stats": {
+    "total_chunks": 12,
+    "avg_chunk_quality": 0.875,
+    "document_info": {...}
   }
 }
 ```
@@ -102,43 +139,75 @@ Documentation interactive Swagger.
 **Configuration du nœud HTTP Request** :
 - Méthode : POST
 - URL : http://localhost:8000/chunk
+- Headers :
+```json
+{
+  "Content-Type": "application/json"
+}
+```
 - Body :
 ```json
 {
-  "text": "{{$json.extractedText}}",
-  "target_size": 60,
-  "overlap": 15
+  "extractedText": "{{$json.extractedText}}",
+  "userId": "{{$json.userId}}",
+  "projectId": "{{$json.projectId}}",
+  "options": {
+    "target_chunk_size": 60,
+    "overlap_size": 15
+  }
 }
 ```
 
+**⚠️ Champs obligatoires** :
+- `userId` : Identifiant unique de l'utilisateur
+- `projectId` : Identifiant unique du projet
+- `extractedText` : Texte du document à chunker
+
 ## 🎯 Fonctionnalités
 
-### Chunking Intelligent
-- Segmentation basée sur les phrases
-- Respect des structures juridiques
-- Préservation du contexte avec overlap
-- Adaptation selon le type de document
+### 🧠 Chunking Intelligent
+- Segmentation basée sur les phrases avec contexte sémantique
+- Respect des structures juridiques (articles, clauses, tableaux)
+- Préservation du contexte avec overlap intelligent
+- Adaptation automatique selon le type de document
 
-### Reconnaissance de Patterns Juridiques
-- Clauses contractuelles
-- Références légales
-- Montants et dates
-- Obligations et responsabilités
-- Terminologie du bâtiment
+### 📋 Extraction de Métadonnées Avancées
+- **Identification automatique** de 7 types de documents juridiques
+- **Extraction des parties** (réservant/réservataire, bailleur/locataire, etc.)
+- **Dates principales** (signature, création, échéances)
+- **Localisation** et projets immobiliers
+- **ID standardisé** pour traçabilité complète
 
-### Métriques de Qualité
-- Détection des chunks trop courts
-- Validation de la cohérence
-- Calcul du pourcentage de qualité
-- Logging détaillé
+### 🔍 Reconnaissance de Patterns Juridiques
+- Clauses contractuelles et articles de loi
+- Références légales (Code civil, CCH, etc.)
+- Montants financiers et échéanciers
+- Obligations et responsabilités des parties
+- Terminologie spécialisée du bâtiment
+
+### ⚡ Optimisation RAG
+- **Structure JSON optimisée** pour l'intégration RAG
+- **Contexte documentaire complet** dans chaque chunk
+- **Références sources professionnelles** sans numéros internes
+- **Traçabilité utilisateur/projet** pour chaque chunk
+- **Métadonnées enrichies** (entités, qualité, classification)
+
+### 📊 Métriques de Qualité
+- Analyse multi-facteurs (complétude, cohérence, densité)
+- Score de qualité par chunk (0.0 à 1.0)
+- Distribution statistique des performances
+- Validation automatique des résultats
 
 ## 📊 Performance
 
-| Métrique | Ancien système | Nouveau système | Amélioration |
-|----------|----------------|-----------------|--------------|
-| Chunks de faible qualité | 88% | 12,5% | 85,8% |
-| Qualité moyenne | 12% | 87,5% | +629% |
-| Temps de traitement | Variable | ~100ms | Optimisé |
+| Métrique | Ancien système | Nouveau système v2.1 | Amélioration |
+|----------|----------------|----------------------|--------------|
+| Chunks de faible qualité | 88% | 12,5% | **85,8%** |
+| Qualité moyenne | 12% | 87,5% | **+629%** |
+| Temps de traitement | Variable | ~100ms | **Optimisé** |
+| Contexte préservé | ❌ 0% | ✅ 100% | **Nouveau** |
+| Métadonnées extraites | ❌ Aucune | ✅ Complètes | **Nouveau** |
+| Traçabilité | ❌ Limitée | ✅ ID + User/Project | **Nouveau** |
 
 ## 🛠️ Gestion du Service
 

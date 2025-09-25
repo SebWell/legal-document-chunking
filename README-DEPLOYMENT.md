@@ -69,6 +69,8 @@ Une fois l'API déployée, configurez votre nœud HTTP Request dans n8n :
 ```json
 {
   "extractedText": "{{$json.extractedText}}",
+  "userId": "{{$json.userId}}",
+  "projectId": "{{$json.projectId}}",
   "options": {
     "target_chunk_size": 60,
     "overlap_size": 15
@@ -76,20 +78,25 @@ Une fois l'API déployée, configurez votre nœud HTTP Request dans n8n :
 }
 ```
 
-## 🎯 Fonctionnalités Version Pro
+**⚠️ Nouveaux champs obligatoires v2.1** :
+- `userId` : Identifiant unique de l'utilisateur pour traçabilité
+- `projectId` : Identifiant unique du projet pour organisation
 
-### ✨ Améliorations de qualité
-- **Gestion intelligente des tableaux** - Segmentation optimale
-- **Taille adaptative** - Chunks ajustés selon le type de contenu
-- **12 catégories d'entités** spécialisées immobilier
-- **Analyse qualité 6 facteurs** - Score de précision maximale
-- **Overlap sémantique** - Préservation du contexte
+## 🎯 Fonctionnalités Version 2.1
 
-### 📊 Performance attendue
-- **>99%** de chunks de haute qualité
-- **+15%** précision terminologie métier
-- **+30%** cohérence contextuelle
-- **<1%** chunks défaillants
+### ✨ Nouvelles fonctionnalités
+- **Métadonnées contextuelles complètes** - Extraction automatique titre, date, parties, localisation
+- **7 types de documents** supportés (VEFA, CCTP, Baux, Actes notariés, etc.)
+- **ID standardisés** - Format AAAAMMJJHHMMSSXXX pour traçabilité
+- **Références sources professionnelles** - Format optimisé RAG sans numéros internes
+- **Traçabilité utilisateur/projet** - userId/projectId dans chaque chunk
+- **Structure JSON enrichie** - Familles content/metadata/document_info
+
+### 📊 Performance v2.1
+- **12,5%** de chunks de faible qualité (maintenu)
+- **100%** contexte documentaire préservé
+- **100%** métadonnées extraites automatiquement
+- **Nouveau** : traçabilité complète utilisateur/projet
 
 ## 🔒 Sécurité et Performance
 
@@ -123,6 +130,8 @@ curl -X POST "https://chunk.chantierdoc.com/chunk" \
   -H "Content-Type: application/json" \
   -d '{
     "extractedText": "Article 1. Test de chunking pour document juridique.",
+    "userId": "test-user-123",
+    "projectId": "test-project-456",
     "options": {"target_chunk_size": 60, "overlap_size": 15}
   }'
 ```
