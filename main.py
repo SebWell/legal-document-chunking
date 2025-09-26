@@ -798,21 +798,84 @@ class ChunkingService:
         words = content.split()
         word_count = len(words)
 
-        # 1. Facteur longueur optimisé (courbe gaussienne)
-        optimal_length = 55  # Taille optimale pour l'immobilier
-        length_variance = 25
+        # 1. Facteur longueur adaptatif selon le type de contenu
+        content_type = self.classify_content(content)
+
+        # Longueurs optimales spécialisées
+        optimal_lengths = {
+            'financial': 65,          # Plus de contexte pour clauses financières
+            'technical_requirements': 70,  # Spécifications techniques détaillées
+            'legal_references': 45,   # Articles courts et précis
+            'obligations': 55,        # Obligations moyennes
+            'timeline': 50,          # Délais et échéances
+            'conditions': 60,        # Conditions contractuelles
+            'parties_info': 40,      # Information sur les parties (courte)
+            'penalties': 55,         # Pénalités et sanctions
+            'insurance': 65,         # Assurances et garanties (détaillées)
+            'general': 55           # Défaut pour contenu général
+        }
+
+        optimal_length = optimal_lengths.get(content_type, 55)
+
+        # Variance adaptée au type de contenu
+        variances = {
+            'financial': 30,         # Plus de tolérance pour clauses financières
+            'technical_requirements': 35,  # Très flexible pour spécifications
+            'legal_references': 15,  # Plus strict pour références légales
+            'parties_info': 20,     # Assez strict pour infos parties
+            'general': 25          # Défaut
+        }
+
+        length_variance = variances.get(content_type, 25)
         length_factor = max(0.3, 1.0 - ((word_count - optimal_length) ** 2) / (2 * length_variance ** 2))
 
         # 2. Facteur mots-clés immobiliers pondérés
         weighted_keywords = {
-            # Mots-clés prioritaires (poids 3)
+            # Mots-clés prioritaires universels (poids 3)
             'contrat': 3, 'prix': 3, 'délai': 3, 'garantie': 3, 'obligation': 3,
-            # Mots-clés importants (poids 2)
+            'montant': 3, 'somme': 3, 'euros': 3, 'paiement': 3, 'échéance': 3,
+
+            # Mots-clés VEFA spécialisés (poids 3)
+            'vefa': 3, 'réservation': 3, 'réservataire': 3, 'réservant': 3,
+            'livraison': 3, 'achèvement': 3, 'programme': 3, 'promoteur': 3,
+            'logement': 3, 'appartement': 3, 'résidence': 3, 'projet': 3,
+
+            # Mots-clés CCTP/Construction (poids 3)
+            'cctp': 3, 'maître': 3, 'ouvrage': 3, 'entrepreneur': 3,
+            'sous-traitant': 3, 'architecte': 3, 'chantier': 3, 'normes': 3,
+            'matériaux': 3, 'spécifications': 3, 'réception': 3, 'conformité': 3,
+
+            # Mots-clés Baux (poids 3)
+            'bail': 3, 'locataire': 3, 'bailleur': 3, 'loyer': 3, 'caution': 3,
+            'dépôt': 3, 'résiliation': 3, 'renouvellement': 3, 'indexation': 3,
+
+            # Mots-clés juridiques importants (poids 2)
             'article': 2, 'clause': 2, 'conditions': 2, 'responsabilité': 2,
-            'livraison': 2, 'paiement': 2, 'travaux': 2, 'entreprise': 2,
-            # Mots-clés secondaires (poids 1)
-            'partie': 1, 'engagement': 1, 'modalité': 1, 'échéance': 1,
-            'conformité': 1, 'exécution': 1, 'réception': 1, 'achevements': 1
+            'travaux': 2, 'entreprise': 2, 'assurance': 2, 'décennale': 2,
+            'garanties': 2, 'réserves': 2, 'défauts': 2, 'vice': 2,
+            'notification': 2, 'mise': 2, 'demeure': 2, 'résolution': 2,
+
+            # Termes techniques construction (poids 2)
+            'bâtiment': 2, 'construction': 2, 'gros': 2, 'œuvre': 2,
+            'second': 2, 'fondations': 2, 'structure': 2, 'étanchéité': 2,
+            'isolation': 2, 'cloisons': 2, 'revêtements': 2, 'menuiserie': 2,
+
+            # Mots-clés procéduraux (poids 2)
+            'permis': 2, 'construire': 2, 'déclaration': 2, 'urbanisme': 2,
+            'réglementation': 2, 'autorisations': 2, 'contrôle': 2, 'technique': 2,
+
+            # Mots-clés secondaires contextuels (poids 1)
+            'partie': 1, 'engagement': 1, 'modalité': 1, 'exécution': 1,
+            'société': 1, 'dénommée': 1, 'siège': 1, 'capital': 1,
+            'adresse': 1, 'domicile': 1, 'représentant': 1, 'qualité': 1,
+
+            # Termes temporels et financiers (poids 1)
+            'date': 1, 'terme': 1, 'durée': 1, 'période': 1, 'mensuel': 1,
+            'annuel': 1, 'trimestriel': 1, 'acompte': 1, 'solde': 1, 'facture': 1,
+
+            # Références légales (poids 2)
+            'code': 2, 'civil': 2, 'cch': 2, 'construction': 2, 'habitation': 2,
+            'loi': 2, 'décret': 2, 'arrêté': 2, 'règlement': 2, 'ordonnance': 2
         }
 
         keyword_score = sum(weighted_keywords.get(word.lower(), 0) for word in words)
@@ -897,11 +960,25 @@ class ChunkingService:
         repetition_ratio = len(unique_words) / len([w for w in words if len(w) > 3])
         repetition_factor = min(1.0, repetition_ratio * 2)  # Pénaliser la répétition
 
-        # Détecter les connecteurs logiques
+        # Détecter les connecteurs logiques (généraux + juridiques spécialisés)
         connectors = [
+            # Connecteurs généraux
             'et', 'ou', 'mais', 'donc', 'car', 'ainsi', 'alors', 'cependant',
             'toutefois', 'néanmoins', 'par conséquent', 'en effet', 'de plus',
-            'en outre', 'notamment', 'c\'est-à-dire', 'autrement dit'
+            'en outre', 'notamment', 'c\'est-à-dire', 'autrement dit',
+
+            # Connecteurs juridiques spécialisés (poids plus élevé)
+            'considérant que', 'attendu que', 'vu que', 'aux termes de',
+            'en application de', 'conformément à', 'sous réserve de', 'à condition que',
+            'étant précisé que', 'il est convenu que', 'les parties conviennent',
+            'sous peine de', 'à défaut de', 'en cas de', 'faute de quoi',
+            'par ailleurs', 'en conséquence', 'il en résulte que',
+            'dès lors que', 'dans la mesure où', 'pour autant que',
+
+            # Transitions contractuelles
+            'article premier', 'article suivant', 'le présent article',
+            'la présente clause', 'aux présentes', 'ci-dessus', 'ci-dessous',
+            'susmentionné', 'précité', 'ledit', 'ladite', 'lesdits', 'lesdites'
         ]
         connector_count = sum(1 for conn in connectors if conn in content.lower())
         connector_factor = min(1.0, 0.6 + (connector_count / len(content.split())) * 10)
@@ -962,28 +1039,74 @@ class ChunkingService:
             'penalties': []
         }
 
-        # Dates (formats français étendus)
+        # Dates (formats français étendus et complets)
         date_patterns = [
+            # Formats numériques standards
             r'\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}',
-            r'\d{1,2}\s+(?:janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre)\s+\d{4}',
-            r'(?:janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre)\s+\d{4}',
-            r'\d{1,2}er?\s+(?:janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre)\s+\d{4}',
-            r'(?:lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\s+\d{1,2}'
+            r'\d{1,2}\s*[\/\-\.]\s*\d{1,2}\s*[\/\-\.]\s*\d{2,4}',
+
+            # Formats avec mois en lettres
+            r'\d{1,2}\s+(?:janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre)\s+\d{4}',
+            r'(?:janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre)\s+\d{4}',
+            r'\d{1,2}er?\s+(?:janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre)\s+\d{4}',
+
+            # Formats avec "le" et prépositions
+            r'le\s+\d{1,2}\s+(?:janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre)\s+\d{4}',
+            r'du\s+\d{1,2}\s+(?:janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre)\s+\d{4}',
+            r'au\s+\d{1,2}\s+(?:janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre)\s+\d{4}',
+
+            # Contextes juridiques spéciaux
+            r'fait\s+à\s+[^,]+,?\s+le\s+\d{1,2}\s+\w+\s+\d{4}',
+            r'signé\s+le\s+\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}',
+            r'conclu\s+le\s+\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}',
+            r'établi\s+le\s+\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}',
+
+            # Échéances et délais
+            r'(?:échéance|délai|terme)\s+(?:du|le|au)?\s*\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}',
+            r'avant\s+le\s+\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}',
+            r'jusqu\'au\s+\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}',
+
+            # Jours de la semaine avec dates
+            r'(?:lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\s+\d{1,2}\s+\w+\s+\d{4}'
         ]
         for pattern in date_patterns:
             matches = re.findall(pattern, content, re.IGNORECASE)
             entities['dates'].extend(matches)
 
-        # Montants et devises avancés
+        # Montants et devises avancés (formats français complets)
         amount_patterns = [
-            r'\d+[\s,]*\d*[\.,]\d{2}\s*(?:euros?|€)',
-            r'\d+[\s,]*\d*\s*(?:euros?|€)',
-            r'\d+[\s,]*\d*\s*EUR',
-            r'\d+[\s,]*\d*\s*(?:\$|dollars?)',
-            r'(?:prix|coût|montant|tarif)\s*:?\s*\d+[\s,]*\d*',
-            r'\d+[\s,]*\d*\s*(?:k€|K€|milliers?\s*d\'euros?)',
+            # Formats numériques avec euros
+            r'\d{1,3}(?:[\s\.]\d{3})*[\.,]\d{2}\s*(?:euros?|€|EUR)',
+            r'\d{1,3}(?:[\s\.]\d{3})*\s*(?:euros?|€|EUR)',
+            r'\d+[\s,]*\d*[\.,]\d{2}\s*(?:euros?|€|EUR)',
+            r'\d+[\s,]*\d*\s*(?:euros?|€|EUR)',
+
+            # Contextes financiers spécialisés
+            r'(?:prix|coût|montant|tarif|somme|valeur|acompte|solde)\s*:?\s*\d{1,3}(?:[\s\.]\d{3})*(?:[\.,]\d{2})?\s*(?:euros?|€|EUR)?',
+            r'(?:loyer|caution|dépôt|garantie)\s*:?\s*\d{1,3}(?:[\s\.]\d{3})*(?:[\.,]\d{2})?\s*(?:euros?|€|EUR)?',
+            r'(?:capital|apport|investissement)\s*:?\s*\d{1,3}(?:[\s\.]\d{3})*\s*(?:euros?|€|EUR)?',
+
+            # Formats avec unités
+            r'\d+[\s,]*\d*\s*(?:k€|K€|milliers?\s*(?:d\'|de\s+)?euros?)',
+            r'\d+[\s,]*\d*\s*(?:M€|millions?\s*(?:d\'|de\s+)?euros?)',
+
+            # TVA et taxes
             r'TVA\s*:?\s*\d+[\.,]?\d*\s*%?',
-            r'HT|TTC'
+            r'(?:HT|TTC|hors\s+taxes?|toutes?\s+taxes?\s+comprises?)',
+            r'taux\s*:?\s*\d+[\.,]?\d*\s*%',
+
+            # Formats en lettres (montants écrits)
+            r'(?:vingt|trente|quarante|cinquante|soixante|quatre-vingt|cent|mille|million)\s+(?:mille|millions?)?\s*(?:euros?|€)?',
+
+            # Montants de travaux et construction
+            r'devis\s*:?\s*\d{1,3}(?:[\s\.]\d{3})*(?:[\.,]\d{2})?\s*(?:euros?|€|EUR)?',
+            r'facture\s*:?\s*\d{1,3}(?:[\s\.]\d{3})*(?:[\.,]\d{2})?\s*(?:euros?|€|EUR)?',
+            r'honoraires\s*:?\s*\d{1,3}(?:[\s\.]\d{3})*(?:[\.,]\d{2})?\s*(?:euros?|€|EUR)?',
+
+            # Devises autres
+            r'\d+[\s,]*\d*\s*(?:\$|dollars?|USD)',
+            r'\d+[\s,]*\d*\s*(?:£|livres?|GBP)',
+            r'\d+[\s,]*\d*\s*(?:CHF|francs?\s+suisses?)'
         ]
         for pattern in amount_patterns:
             matches = re.findall(pattern, content, re.IGNORECASE)
